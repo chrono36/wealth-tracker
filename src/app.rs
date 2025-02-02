@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use eframe::CreationContext;
-use egui::{Frame, Layout, TopBottomPanel};
+use egui::{Frame, TopBottomPanel};
 
 use crate::StockTrackerView;
 
@@ -18,14 +18,20 @@ impl WealthTracker {
         load_font(&cc.egui_ctx);
 
         Self {
-            stock_tracker: StockTrackerView::default(),
+            stock_tracker: StockTrackerView::new(cc),
         }
     }
 
     fn render_top_panel(&self, ctx: &egui::Context) {
-        TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            egui::global_theme_preference_buttons(ui);
-        });
+        TopBottomPanel::top("top_panel")
+            // .frame(
+            //     egui::Frame::default()
+            //         .fill(ui.style().visuals.window_fill) // 使用主题背景色
+            //         .inner_margin(4.0),
+            // )
+            .show(ctx, |ui| {
+                egui::global_theme_preference_buttons(ui);
+            });
     }
 }
 
@@ -34,7 +40,7 @@ impl eframe::App for WealthTracker {
         self.render_top_panel(ctx);
 
         egui::CentralPanel::default()
-            .frame(Frame::none())
+            // .frame(Frame::none())
             .show(ctx, |ui| {
                 let mut is_open = true;
                 self.stock_tracker.show(ctx, &mut is_open);

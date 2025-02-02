@@ -1,65 +1,39 @@
+use std::{collections::HashMap, thread};
+
+use crossbeam::channel::{Receiver, Sender};
+use eframe::CreationContext;
 use egui::{
-    menu, Align, Align2, Button, Color32, Context, CursorIcon, Grid, Label, Layout, RichText,
-    Separator, Shadow, Stroke, TextStyle, TopBottomPanel, Vec2,
+    menu, Align, Align2, Button, CollapsingHeader, Color32, Context, CursorIcon, Grid, Label,
+    Layout, RichText, Separator, Shadow, SidePanel, Slider, Stroke, TextStyle, TopBottomPanel,
+    Vec2,
 };
 use egui_plot::{
     AxisHints, Bar, BarChart, BoxElem, BoxPlot, BoxSpread, HLine, Plot, PlotPoint, Text,
 };
+use serde::{Deserialize, Serialize};
 
-use crate::model::{stock, Stock, StockData};
+use crate::{
+    backend::{StockCammnd, StockTask, TxStockData},
+    model::{stock, Stock},
+};
 
+#[derive(Default)]
 pub struct StockTrackerView {
-    stocks: Vec<Stock>,
+    data: HashMap<String, Stock>,
     show_klines_viewport: bool,
+    setting: Setting,
+    tx: Option<Sender<StockCammnd>>,
+    rx: Option<Receiver<TxStockData>>,
 }
 
-impl Default for StockTrackerView {
-    fn default() -> Self {
-        let stocks = vec![
-            Stock {
-                name: String::from("比亚迪"),
-                code: String::from("sz002594"),
-                data: StockData::default(),
-                ..Default::default()
-            },
-            Stock {
-                name: String::from("长安汽车"),
-                code: String::from("sz000625"),
-                data: StockData::default(),
-                ..Default::default()
-            },
-            Stock {
-                name: String::from("赛力斯"),
-                code: String::from("sh601127"),
-                data: StockData::default(),
-                ..Default::default()
-            },
-        ];
-
-        // fetch data
-
-        let codes = vec![
-            "sh000001".to_string(),
-            "sz399001".to_string(),
-            "sh000300".to_string(),
-            "sz000625".to_string(),
-            "sz002594".to_string(),
-            "sh601127".to_string(),
-        ];
-
-        let res = stock::fetch_data_list(codes);
-
-        match res {
-            Ok(v) => Self {
-                stocks: v,
-                show_klines_viewport: false,
-            },
-            Err(e) => Self {
-                stocks: stocks,
-                show_klines_viewport: false,
-            },
-        }
-    }
+#[derive(Default, Serialize, Deserialize)]
+struct Setting {
+    open: bool,
+    show_name: bool,
+    show_color: bool,
+    interval: u32,
+    stocks: String,
+    adding_code: String,
 }
 
 impl StockTrackerView {
@@ -67,19 +41,81 @@ impl StockTrackerView {
         "Stock Tracker"
     }
 
+    pub fn new(cc: &CreationContext) -> Self {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let (tx2, rx2) = crossbeam::channel::unbounded();
+
+        let mut app = StockTrackerView::default();
+
+        if let Some(storage) = cc.storage {
+            if let Some(setting) = eframe::get_value(storage, eframe::APP_KEY) {
+                app.setting = setting
+            }
+        }
+        let mut codes = app.setting.stocks.clone();
+
+        // 默认三大指数
+        if codes.is_empty() {
+            codes = String::from("sh000001,sz399001,sh000300");
+        }
+        thread::spawn(|| StockTask::new(rx, tx2, codes).run());
+        app.tx = Some(tx);
+        app.rx = Some(rx2);
+        app
+    }
+}
+
+impl StockTrackerView {
     pub fn show(&mut self, ctx: &Context, open: &mut bool) {
         let frame = egui::Frame::none().shadow(Shadow::NONE);
         egui::Window::new(self.name())
             .default_width(320.0)
             .default_height(480.0)
-            .frame(frame)
+            // .frame(frame)
             .open(open)
             .resizable([true, true])
             .scroll(true)
             .show(ctx, |ui| {
-                self.refresh();
+                ctx.request_repaint();
+
+                self.receiver();
                 self.render_stocks(ctx, ui);
+                // self.render_setting(ctx);
             });
+    }
+
+    fn receiver(&mut self) {
+        if let Some(rx) = &self.rx {
+            match rx.recv() {
+                Ok(data) => match data {
+                    TxStockData::Stock(stock) => {
+                        if let Some(s) = self.data.get_mut(&stock.code) {
+                            s.data = stock.data.clone();
+                        } else {
+                            self.data.insert(stock.code.clone(), stock);
+                        }
+                    }
+                    TxStockData::StockList(stocks) => {
+                        stocks.iter().for_each(|stock| {
+                            if let Some(s) = self.data.get_mut(&stock.code) {
+                                s.data = stock.data.clone();
+                            } else {
+                                self.data.insert(stock.code.to_string(), stock.clone());
+                            }
+                        });
+                    }
+                    TxStockData::Kline((code, kline)) => {
+                        //
+                        if let Some(s) = self.data.get_mut(&code) {
+                            s.kline = kline;
+                        }
+                    }
+                },
+                Err(e) => {
+                    let _ = e;
+                }
+            }
+        }
     }
 }
 
@@ -91,7 +127,7 @@ impl StockTrackerView {
             .max_col_width(60.0)
             .striped(true)
             .show(ui, |ui| {
-                self.stocks.iter_mut().for_each(|stock| {
+                self.data.values_mut().for_each(|stock| {
                     // name
                     ui.centered_and_justified(|ui| {
                         ui.add(
@@ -201,6 +237,12 @@ impl StockTrackerView {
                                                     .clicked()
                                                 {
                                                     //TODO: request scale kline data
+                                                    if let Some(tx) = &self.tx {
+                                                        let _ = tx.send(StockCammnd::StockKLine(
+                                                            stock.code.to_string(),
+                                                            stock::KLineScale::Munute5,
+                                                        ));
+                                                    }
                                                 }
                                                 if ui
                                                     .selectable_value(
@@ -211,6 +253,12 @@ impl StockTrackerView {
                                                     .clicked()
                                                 {
                                                     //TODO: request scale kline data
+                                                    if let Some(tx) = &self.tx {
+                                                        let _ = tx.send(StockCammnd::StockKLine(
+                                                            stock.code.to_string(),
+                                                            stock::KLineScale::Munute15,
+                                                        ));
+                                                    }
                                                 }
                                                 if ui
                                                     .selectable_value(
@@ -221,6 +269,12 @@ impl StockTrackerView {
                                                     .clicked()
                                                 {
                                                     //TODO: request scale kline data
+                                                    if let Some(tx) = &self.tx {
+                                                        let _ = tx.send(StockCammnd::StockKLine(
+                                                            stock.code.to_string(),
+                                                            stock::KLineScale::Munute30,
+                                                        ));
+                                                    }
                                                 }
                                                 if ui
                                                     .selectable_value(
@@ -231,6 +285,12 @@ impl StockTrackerView {
                                                     .clicked()
                                                 {
                                                     //TODO: request scale kline data
+                                                    if let Some(tx) = &self.tx {
+                                                        let _ = tx.send(StockCammnd::StockKLine(
+                                                            stock.code.to_string(),
+                                                            stock::KLineScale::Day,
+                                                        ));
+                                                    }
                                                 }
                                             });
 
@@ -473,9 +533,78 @@ impl StockTrackerView {
             });
     }
 
-    fn refresh(&mut self) {
-        self.stocks.iter_mut().for_each(|s| {
-            let _ = s.get_klines(15, 50);
+    fn render_setting(&mut self, ctx: &eframe::egui::Context) {
+        if self.setting.open {
+            SidePanel::right("setting").show(ctx, |ui| {
+                menu::bar(ui, |ui| {
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.label(RichText::new("⚙ setting").color(Color32::LIGHT_BLUE));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let close_btn = ui.add(Button::new(
+                                RichText::new("\u{2bab}")
+                                    .text_style(TextStyle::Body)
+                                    .color(Color32::GRAY),
+                            ));
+                            if close_btn.clicked() {
+                                self.setting.open = false
+                            }
+                        });
+                    });
+                    self.render_setting_content(ui);
+                });
+            });
+        }
+    }
+
+    fn render_setting_content(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().slider_width = 50.0;
+            ui.label(RichText::new("🕘").color(Color32::GREEN));
+            let interval_slider = ui.add(
+                Slider::new(&mut self.setting.interval, 200..=1000)
+                    .suffix(" ms")
+                    .step_by(100.0),
+            );
+            // set interval
+            if interval_slider.changed() {
+                if let Some(tx) = &self.tx {
+                    let _ = tx.send(StockCammnd::SetInterval(self.setting.interval));
+                }
+            }
+            ui.add(Separator::default().spacing(0.0));
+
+            // stocks list
+            ui.horizontal(|ui| {
+                //
+                ui.label(RichText::new("📓").color(Color32::LIGHT_BLUE));
+                CollapsingHeader::new("stocks")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        for (_code, s) in self.data.clone() {
+                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                ui.label(
+                                    RichText::new(format!("{}({})", s.name, s.code))
+                                        .color(Color32::LIGHT_BLUE),
+                                );
+                                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                    ui.add_space(3.0);
+                                    let close_btn = ui.add(Button::new(
+                                        RichText::new("❌")
+                                            .text_style(TextStyle::Body)
+                                            .color(Color32::RED),
+                                    ));
+                                    if close_btn.clicked() {
+                                        self.data.remove(&s.code);
+                                    }
+                                });
+                            });
+                        }
+                    });
+            });
+            ui.add(Separator::default().spacing(0.0));
+            ui.horizontal(|ui| {
+                // add stock code
+            });
         });
     }
 }
