@@ -24,6 +24,7 @@ pub struct StockTrackerView {
     setting: Setting,
     tx: Option<Sender<StockCammnd>>,
     rx: Option<Receiver<TxStockData>>,
+    time: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -77,7 +78,7 @@ impl StockTrackerView {
             .scroll(true)
             .show(ctx, |ui| {
                 ctx.request_repaint();
-
+                self._render_top_panel(ctx, ui);
                 self.receiver();
                 self.render_stocks(ctx, ui);
                 // self.render_setting(ctx);
@@ -86,7 +87,7 @@ impl StockTrackerView {
 
     fn receiver(&mut self) {
         if let Some(rx) = &self.rx {
-            match rx.recv() {
+            match rx.try_recv() {
                 Ok(data) => match data {
                     TxStockData::Stock(stock) => {
                         if let Some(s) = self.data.get_mut(&stock.code) {
@@ -96,6 +97,7 @@ impl StockTrackerView {
                         }
                     }
                     TxStockData::StockList(stocks) => {
+                        self.update_time();
                         stocks.iter().for_each(|stock| {
                             if let Some(s) = self.data.get_mut(&stock.code) {
                                 s.data = stock.data.clone();
@@ -139,6 +141,7 @@ impl StockTrackerView {
                         );
                     });
 
+                    // amount
                     ui.centered_and_justified(|ui| {
                         ui.add(Label::new(
                             RichText::new(stock.data_new().to_string())
@@ -310,7 +313,9 @@ impl StockTrackerView {
                                                     } else {
                                                         Color32::RED
                                                     };
+
                                                     BoxElem::new(
+                                                        // x.day.and_utc().timestamp() as f64,
                                                         i as f64,
                                                         BoxSpread::new(
                                                             x.low,
@@ -334,6 +339,22 @@ impl StockTrackerView {
                                                 .custom_x_axes(vec![
                                                     AxisHints::new_x().label("Time (s)")
                                                 ])
+                                                // .custom_x_axes(vec![
+                                                //     AxisHints::new_x().label("Time (s)"),
+                                                //     AxisHints::new_x().label("Time").formatter(
+                                                //         |x, _| {
+                                                //             let date_time =
+                                                //                 DateTime::from_timestamp(
+                                                //                     x.value as i64,
+                                                //                     0,
+                                                //                 )
+                                                //                 .unwrap();
+                                                //             date_time
+                                                //                 .format("%Y-%m-%d %H:%M:%S")
+                                                //                 .to_string()
+                                                //         },
+                                                //     ),
+                                                // ])
                                                 .show(ui, |plot_ui| {
                                                     plot_ui.box_plot(box1);
                                                 })
@@ -479,7 +500,7 @@ impl StockTrackerView {
     fn _render_top_panel(&mut self, ctx: &Context, ui: &mut egui::Ui) {
         // define a TopBottomPanel widget
         TopBottomPanel::top("top_panel")
-            .frame(egui::Frame::none())
+            // .frame(egui::Frame::none())
             .show_inside(ui, |ui| {
                 ui.add_space(2.0);
 
@@ -488,9 +509,7 @@ impl StockTrackerView {
                         ui.add_space(5.0);
                         let rocket_btn = ui
                             .add(Button::new(
-                                RichText::new("🚀")
-                                    .text_style(egui::TextStyle::Heading)
-                                    .color(Color32::YELLOW),
+                                RichText::new("🚀").text_style(egui::TextStyle::Heading), // .color(Color32::YELLOW)
                             ))
                             .on_hover_cursor(CursorIcon::Move);
                         if rocket_btn.is_pointer_button_down_on() {
@@ -498,7 +517,7 @@ impl StockTrackerView {
                         };
 
                         ui.add(Label::new(
-                            RichText::new("2025-02-01 17:05;55").text_style(egui::TextStyle::Small),
+                            RichText::new(self.time.clone()).text_style(egui::TextStyle::Small),
                         ));
                     });
 
@@ -606,5 +625,9 @@ impl StockTrackerView {
                 // add stock code
             });
         });
+    }
+
+    fn update_time(&mut self) {
+        self.time = format!("{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
     }
 }
